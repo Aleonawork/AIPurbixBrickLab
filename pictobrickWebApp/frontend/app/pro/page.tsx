@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+import Script from 'next/script';
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload, X, Layers, Smartphone, ScanLine, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -60,7 +61,7 @@ export default function BrickLabStudio() {
           >
             <div>
               <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-3">
-                <Layers className="text-[#004b87]" /> Workspace
+                <Layers className="text-[#004b87]" /> Test Building
               </h1>
               <p className="text-slate-500 text-sm mt-1">
                 {images.filter(Boolean).length} / 5 Assets Ready
@@ -101,10 +102,18 @@ export default function BrickLabStudio() {
                   animate={{ opacity: 1 }}
                   className="w-full h-full flex flex-col items-center justify-center text-slate-400 gap-4"
                 >
-                  <div className="w-20 h-20 rounded-full bg-slate-50 flex items-center justify-center border border-dashed border-slate-300">
-                    <ScanLine className="w-8 h-8 opacity-50 text-[#004b87]" />
-                  </div>
-                  <p>Select a slot below to begin</p>
+                  {/* This is where the 3D scene will inject itself */}
+                    <div
+                        id="container3D"
+                        className="w-full max-w-2xl h-[400px] mx-auto rounded-xl border border-slate-800 bg-black/20"
+                    ></div>
+
+                    {/* The Script Loader */}
+                    <Script
+                        src="/viewer.js"
+                        type="module"
+                        strategy="afterInteractive"
+                    />
                 </motion.div>
               )}
             </AnimatePresence>
