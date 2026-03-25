@@ -10,7 +10,7 @@ rembg       ML-based removal via the `rembg` package (optional dep).
             Best quality for complex or outdoor backgrounds.
 
 All strategies write a single-channel uint8 PNG to ws.masks_dir where
-255 = foreground and 0 = background, matching the NeRF/3DGS convention.
+255 = allowed and 0 = forbidden, matching the NeRF/3DGS convention.
 """
 
 from __future__ import annotations
@@ -20,9 +20,12 @@ import logging
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
+from .io import mask_path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
+
+from .settings import MaskingSettings
 
 log =logging.getLogger(__name__)
 
@@ -46,26 +49,26 @@ class MaskingRunResults:
     masked_frames:int
     bad_for_sfm_frames:int
 
+
 def run_masking(
         image_paths:Sequence[Path],
+        image_root:Path,
         output_dir:Path,
         *,
-        enabled:bool,
-        backend:str,
-        dilation_px:int,
-        min_unmasked_ratio:float,
-        sky_top_fraction:float,
-        sky_blue_strength:float,
-        sky_low_sat:float,
-        sky_high_val:float,
-        semantic_classes_to_mask:tuple[str, ...],
-        device:str
+        settings: MaskingSettings,
 ) -> Optional[MaskingRunResults]:
+    """ Validate the config and run the masking. Returns None if masking is disabled. """
     """ Creates per pixel mask -PNGs where 255=foreground, 0=background. Returns summary results. """
-    if not enabled or backend.strip().lower() in ("none", ""):
+    if not isinstance(settings, MaskingSettings):
+        raise TypeError("settings must be a MaskingSettings instance")
+
+    if not settings.enabled or settings.backend.strip().lower() in ("none", ""):
         return None
     
-    backend_1 = backend.strip().lower()
+    image_root = Path(image_root)
+    output_dir = Path(output_dir)
+    
+    backend_1 = settings.backend.strip().lower()
     use_sky = "sky_hsv" in backend_1
     use_deeplab = "deeplab" in backend_1
 
@@ -74,7 +77,10 @@ def run_masking(
 
     deeplab_ctx = None
     if use_deeplab:
-        deeplab_ctx = _init_deeplab_ctx(device=device, classes=semantic_classes_to_mask)
+        deeplab_ctx = _init_deeplab_ctx(
+            device=settings.device, 
+            classes_to_mask=settings.semantic_classes_to_mask
+    )
 
     stats:list[MaskingFrameStatus] = []
     bad_count = 0
@@ -93,32 +99,36 @@ def run_masking(
         if use_sky:
             sky = _sky_mask(
                 rgb,
-                top_fraction= sky_top_fraction,
-                blue_strength= sky_blue_strength,
-                low_sat= sky_low_sat,
-                high_val= sky_high_val
+                top_fraction= settings.sky_top_fraction,
+                blue_strength= settings.sky_blue_strength,
+                low_sat= settings.sky_low_sat,
+                high_val= settings.sky_high_val
             )
             keep[sky] = False
             notes.append("sky_hsv")
 
         if use_deeplab and deeplab_ctx is not None:
-            sem = _deeplap_mask(rgb, deeplab_ctx)
+            sem = _deeplab_mask(rgb, deeplab_ctx)
             keep[sem] = False
             notes.append("deeplab")
 
-        if dilation_px and dilation_px > 0:
-            keep = _dilate_masked_out(keep, dilation_px= dilation_px)
+        if settings.dilation_px and settings.dilation_px > 0:
+            keep = _dilate_masked_out(keep, dilation_px= settings.dilation_px)
 
         
         unmasked_ratio = float(np.mean(keep))
-        masked_ration = 1.0 - unmasked_ratio
-        bad_for_sfm = unmasked_ratio < min_unmasked_ratio
+        masked_ratio = 1.0 - unmasked_ratio
+        bad_for_sfm = unmasked_ratio < settings.min_unmasked_ratio
         if bad_for_sfm:
             bad_count += 1
-            notes.append(f"low_unmasked_ratio<{min_unmasked_ratio:g}")
+            notes.append(f"low_unmasked_ratio<{settings.min_unmasked_ratio:g}")
         
-        mask_u8 = np.wehre(keep, 255, 0).astype(np.uint8)
-        mask_p = output_dir / (img_p.stem + ".png")
+        mask_u8 = np.where(keep, 255, 0).astype(np.uint8)
+        mask_p = mask_path(
+            image_path=img_p,
+            image_root=image_root,
+            mask_root=output_dir,
+        )
         _write_mask(mask_u8, mask_p)
 
         stats.append(
@@ -128,7 +138,7 @@ def run_masking(
                 width=w,
                 height=h,   
                 unmasked_ratio=unmasked_ratio,
-                masked_ratio=masked_ration,
+                masked_ratio=masked_ratio,
                 bad_for_sfm=bad_for_sfm,
                 notes=tuple(notes)
             )   
@@ -137,7 +147,7 @@ def run_masking(
     
     payload: dict[str, Any] = {
         "version": 1,
-        "backend": backend,
+        "backend": settings.backend,
         "masked_frames": len(stats),
         "bad_for_sfm_frames": bad_count,
         "frames": [asdict(s) for s in stats]
@@ -167,6 +177,7 @@ class _DeepLabCtx:
     model: Any
     device: str
     class_ids_to_mask: set[int]
+    preprocess: Any
     
 def _init_deeplab_ctx(*, device:str, classes_to_mask:tuple[str, ...]) -> _DeepLabCtx:
     try:
@@ -189,32 +200,43 @@ def _init_deeplab_ctx(*, device:str, classes_to_mask:tuple[str, ...]) -> _DeepLa
     elif dev not in ("cpu", "cuda"):
         raise ValueError(f"Invalid device '{device}' for deeplabv3 masking, must be one of auto|cpu|cuda")
     
-    model = deeplabv3_resnet50(weights=weights).eval.to(dev)
+    model = deeplabv3_resnet50(weights=weights).eval().to(dev)
+    preprocess = weights.transforms()
 
     ids = {name_to_id[name] for name in classes_to_mask if name in name_to_id}
     if not ids:
         log.warning(f"deeplabv3 masking: no valid classes to mask found in model categories, got {classes_to_mask}, model categories are {cats}")
     
-    return _DeepLabCtx(model=model, device=dev, class_ids_to_mask=ids)
+    return _DeepLabCtx(
+        model=model, 
+        device=dev, 
+        class_ids_to_mask=ids,
+        preprocess=preprocess,
+    )
 
-def _deeplap_mask(rgb:np.darray, ctx: _DeepLabCtx) -> np.ndarray:
+def _deeplab_mask(rgb:np.ndarray, ctx: _DeepLabCtx) -> np.ndarray:
     import torch
-    from torchvision.models.segmentation import DeepLabV3_ResNet50_Weights
-
+    import torch.nn.functional as F
+    
     if not ctx.class_ids_to_mask:
         return np.zeros(rgb.shape[:2], dtype=bool)
     
-    weights = DeepLabV3_ResNet50_Weights.DEFAULT
-    preprocess = weights.transforms()
+    h,w = rgb.shape[:2]
 
     pil = Image.fromarray(rgb, mode="RGB")
-    input_tensor = preprocess(pil).unsqueeze(0).to(ctx.device)  
+    input_tensor = ctx.preprocess(pil).unsqueeze(0).to(ctx.device)  
 
-    with torcn.no_grad():
+    with torch.no_grad():
         out = ctx.model(input_tensor)["out"]
-        pred = out.argmax(1).squeeze(0).cpu.numpy().astype(np.int32)
+        out = F.interpolate(
+            out,
+            size=(h, w),
+            mode="bilinear",
+            align_corners=False
+        )
+        pred = out.argmax(1).squeeze(0).cpu().numpy().astype(np.int32)
 
-    return np.isin(pred, list(ctx.classclass_ids_to_mask))
+    return np.isin(pred, list(ctx.class_ids_to_mask))
 
 
 def _sky_mask(
@@ -242,10 +264,10 @@ def _sky_mask(
 
     maxc = np.maximum(np.maximum(r, g), b)
     minc = np.minimum(np.minimum(r, g), b)
-    vars = maxc
+    val = maxc
     sat = np.where(maxc > 1e-6, (maxc - minc) / maxc, 0.0)
 
-    cloudy = (sat < low_sat) & (vars > high_val)
+    cloudy = (sat < low_sat) & (val > high_val)
     sky_top = blue_dom | cloudy
 
     out = np.zeros((h,w), dtype=bool)
@@ -255,11 +277,25 @@ def _sky_mask(
 
 def _dilate_masked_out(mask:np.ndarray, dilation_px:int) -> np.ndarray:
     """Dilates the False (masked-out) regions of the mask by the specified pixel radius."""
-    #TODO implement
-    pass
+    if dilation_px <=0:
+        return mask
+    
+    masked_out = (~mask).astype(np.uint8)*255
+
+    k = max(3, 2 * int(dilation_px) + 1)
+
+    im= Image.fromarray(masked_out, mode="L")
+    dilated = im.filter(ImageFilter.MaxFilter(size=k))
+    dilated_masked_out = np.asarray(dilated, dtype=np.uint8) > 0
+
+    return ~dilated_masked_out
 
 
 def _write_mask(mask_u8:np.ndarray, path:Path) -> None:
-    with Image.fromarray(mask_u8) as im:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if mask_u8.dtype != np.uint8:
+        mask_u8 = mask_u8.astype(np.uint8)
+
+    with Image.fromarray(mask_u8, mode="L") as im:
         im.save(path, format="PNG")
 

@@ -12,6 +12,8 @@ from .quality import score_and_filter
 from .dedupe import dedupe_keep_best
 from .models import FrameRecord, DroppedRec
 from .manifest import build_min_manifest, write_manifest
+from .masking import run_masking, MaskingRunResults
+
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,20 @@ def run_preprocess(req:PreprocessReq) -> PreprocessResult:
 
     deduped_kept, deduped_removed = dedupe_keep_best(kept_scored, s)
 
+    kept_frame_paths = [p for p, _ in deduped_kept] 
+
+    masking_results = run_masking(
+        image_paths=kept_frame_paths,
+        image_root=ws.frames_dir,
+        output_dir=ws.masks_dir,
+        settings=s.masking
+    )
+
+    mask_lookup: dict[str, str] = {}
+    if masking_results:
+        for fs in masking_results.frames:
+            mask_lookup[fs.image] = fs.mask
+
     frame_records:list[FrameRecord] = []
     for p,m in sorted(deduped_kept, key=lambda t: t[0].name):
         w,h = _frame_dims(p)
@@ -79,7 +95,8 @@ def run_preprocess(req:PreprocessReq) -> PreprocessResult:
                 width=w,
                 height=h,
                 sharpness=m.sharpness,
-                exposure=m.brightness
+                exposure=m.brightness,
+                mask_path=mask_lookup.get(str(p)),
             )
         )
 
@@ -100,7 +117,12 @@ def run_preprocess(req:PreprocessReq) -> PreprocessResult:
             )
     )
         
-    manifest = build_min_manifest(ws.job_id,frame_records, dropped_records)
+    manifest = build_min_manifest(
+        ws.job_id, 
+        frame_records, 
+        dropped_records,
+        source_type="video" if vid_paths else "image_set",
+    )
     manifest_path = write_manifest(ws, manifest)
 
     #Qualit report
@@ -125,6 +147,19 @@ def run_preprocess(req:PreprocessReq) -> PreprocessResult:
             "final_kept": len(frame_records),
         },
     }
+
+    if masking_results is not None:
+        report["masking"] = {
+            "backend": s.masking.backend,
+            "masked_frames": masking_results.masked_frames,
+            "bad_for_sfm_frames": masking_results.bad_for_sfm_frames,
+            "manifest_path": str(masking_results.manifest_path.relative_to(ws.root)),
+    } 
+    else:
+        report["masking"] = {
+        "enabled": False,
+    }
+    
     ws.write_quality_report(report)
 
     return PreprocessResult(

@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
+SourceType = Literal["video", "image_set"]
+
 class CamIntrinsics(BaseModel):
     fx:float
     fy:float
@@ -31,5 +33,6 @@ class DroppedRec(BaseModel):
 
 class Manifest(BaseModel):
     job_id:str
+    source_type:SourceType
     frames:list[FrameRecord]= Field(default_factory=list)
     dropped_frames:list[DroppedRec] = Field(default_factory=list)

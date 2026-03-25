@@ -7,7 +7,7 @@ name = "pictobrickwebapp"  # you can rename later to ptb-ml if you want
 version = "0.1.0"
 requires-python = ">=3.11, <3.13"
 dependencies = [
-    "numpy>=2.2.6",
+    "numpy<2",
     "pandas>=2.3.3",
     # preprocessing engine deps (Milestone 1)
     "pillow>=10",
@@ -16,13 +16,20 @@ dependencies = [
     "pydantic>=2,<3",
     "pillow-heif>=1.2.1",
     "pytest>=9.0.2",
+    "torch>=2.0, <=2.2.2",
+    "torchvision>=0.15, <=0.17.2",
+    "transformers>=4.40,<5.0",
+    "accelerate>=0.30",
+    "geffnet>=1.0.2",
+    "open3d>=0.19.0",
+    "pygltflib>=1.16.5",
 ]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "vendor"]
 
 [[tool.uv.index]]
 url = "https://download.pytorch.org/whl/cpu"
@@ -33,4 +40,11 @@ explicit = true
 index-strategy = "unsafe-best-match"
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
+torch = [
+  { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cpu", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
+]
+torchvision = [
+  { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cpu", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
+]

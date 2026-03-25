@@ -54,5 +54,5 @@ def dedupe_keep_best(
 
         if not found_cluster:
             selected.append((p, m, h))
-    duduped = [(p,m) for p, m, _ in selected]
-    return duduped, removed
+    deduped = [(p,m) for p, m, _ in selected]
+    return deduped, removed

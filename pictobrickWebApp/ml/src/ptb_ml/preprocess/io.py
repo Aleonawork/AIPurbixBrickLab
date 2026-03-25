@@ -27,6 +27,15 @@ def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
 
+def mask_path(*, image_path: Path, image_root: Path, mask_root: Path) -> Path:
+        """mask for a given frame file name"""
+        image_path = Path(image_path)
+        image_root = Path(image_root)
+        mask_root = Path(mask_root)
+
+        rel = image_path.relative_to(image_root)
+        return mask_root / rel.parent / f"{rel.name}.png"
+
 def _atomic_write_bytes(dst:Path, data:bytes) -> None:
     """Atomic Write to dst by writing to a tmp file in the same direcroty then replace"""
     ensure_dir(dst.parent)
@@ -72,6 +81,8 @@ class WorkSpace:
     manifest_filename:str = "manifest.json"
     quality_report_filename:str = "quality_report.json"
 
+    sfm_dirname="sfm"
+
 
 @dataclass
 class JobWorkSpace:
@@ -108,13 +119,29 @@ class JobWorkSpace:
         """Ensure the workspace directories exist on disk"""
         ensure_dir(self.frames_dir)
         ensure_dir(self.masks_dir)
-        ensure_dir(self.metadata_dirname)
+        ensure_dir(self.metadata_dir)
         ensure_dir(self.logs_dir)
         ensure_dir(self.tmp_dir)
         ensure_dir(self.inputs_dir)
+        ensure_dir(self.sfm_dir)
         ensure_dir(self.root)
     
     # ----- Properties  ----- #
+    @property
+    def sfm_dir(self) -> Path:
+        return self.root / self.layout.sfm_dirname
+
+    @property
+    def sfm_database_path(self) -> Path:
+        return self.sfm_dir / "database.db"
+
+    @property
+    def sfm_sparse_dir(self) -> Path:
+        return self.sfm_dir / "sparse"
+
+    @property
+    def sfm_logs_dir(self) -> Path:
+        return self.sfm_dir / "logs"
 
     @property
     def inputs_dir(self) -> Path:
@@ -129,7 +156,7 @@ class JobWorkSpace:
         return self.root / self.layout.masks_dirname
     
     @property
-    def metadata_dirname(self) -> Path:
+    def metadata_dir(self) -> Path:
         return self.root / self.layout.metadata_filename
     
     @property
@@ -142,11 +169,11 @@ class JobWorkSpace:
     
     @property
     def manifest_path(self) -> Path:
-        return self.metadata_dirname / self.layout.manifest_filename
+        return self.metadata_dir / self.layout.manifest_filename
     
     @property
     def quality_report_path(self) -> Path:
-        return self.metadata_dirname / self.layout.quality_report_filename  
+        return self.metadata_dir / self.layout.quality_report_filename  
     
     # ----- Utility Methods ----- #
     def frame_path(self, index:int, ext:str=".jpg") -> Path:
@@ -156,13 +183,7 @@ class JobWorkSpace:
               ext = "." + ext
        return self.frames_dir / f"frame_{index:06d}{ext}"
     
-    def mask_path(self, frame_filename:str, ext:str=".png") -> Path:
-        """mask for a given fram file name"""
-        stem = Path(frame_filename).stem
-        if not ext.startswith("."):
-            ext = "." + ext
-        return self.masks_dir / f"{stem}{ext}"
-    
+
     def write_manifest(self, manifest:dict) -> None:
         atomic_write_json(self.manifest_path, manifest)
 
