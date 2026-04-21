@@ -17,6 +17,9 @@ FROM base AS build
 # inline them into the client JS bundle. Populated from compose build.args.
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+# Tell next.config.ts to emit standalone output (required by the final stage).
+# AWS Amplify builds leave this unset so Next.js emits its default output.
+ENV BUILD_STANDALONE=true
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
