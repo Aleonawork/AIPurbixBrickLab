@@ -3,7 +3,7 @@
 import { motion, Variants } from "framer-motion";
 import Link from "next/link";
 import Image from "next/image";
-import { ArrowRight, Image as ImageIcon, SlidersHorizontal, Box, Layers, ArrowUpRight } from "lucide-react";
+import { ArrowRight, Image as ImageIcon, SlidersHorizontal, Box, Layers } from "lucide-react";
 import { Card } from "@/components/ui/card";
 
 const fadeUp: Variants = {
@@ -22,22 +22,6 @@ export default function HomePage() {
         <div className="absolute top-[-10%] right-[-5%] w-[500px] h-[500px] bg-[#f57c00]/5 rounded-full blur-[100px]" />
         <div className="absolute bottom-[-10%] left-[-5%] w-[600px] h-[600px] bg-[#004b87]/5 rounded-full blur-[120px]" />
       </div>
-
-      {/* Navbar */}
-      <nav className="relative z-50 w-full px-6 py-6 lg:px-12 flex items-center justify-between">
-        <Link href="/">
-          <img src="/logobackgroundremoved.png" alt="BrickLab Studio" className="h-30 w-auto object-contain" />
-        </Link>
-        <div className="hidden md:flex gap-8 text-sm font-bold text-slate-600">
-          <Link href="#how-it-works" className="hover:text-[#004b87] transition-colors">How it Works</Link>
-          <Link href="#gallery" className="hover:text-[#004b87] transition-colors">Gallery</Link>
-        </div>
-        <Link href="/create">
-          <button className="flex items-center gap-2 bg-white border border-slate-200 text-[#004b87] px-5 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm hover:bg-slate-50 hover:shadow-md">
-            Launch Workspace <ArrowUpRight className="w-4 h-4" />
-          </button>
-        </Link>
-      </nav>
 
       {/* Hero Section */}
       <main className="flex-1 flex flex-col items-center justify-center relative z-10 px-6 pt-12 pb-24">
