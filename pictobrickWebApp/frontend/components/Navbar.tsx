@@ -37,6 +37,9 @@ export default function Navbar() {
           {isLoaded && isSignedIn && (
             <Link href="/my-builds" className="hover:text-indigo-400 transition">My Builds</Link>
           )}
+          {isLoaded && isSignedIn && (
+            <Link href="/create-3d" className="hover:text-indigo-400 transition">3D Model</Link>
+          )}
         </div>
 
         {/* CTA */}

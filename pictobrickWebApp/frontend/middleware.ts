@@ -4,6 +4,8 @@ const isProtectedRoute = createRouteMatcher([
   "/my-builds(.*)",
   "/create(.*)",
   "/build(.*)",
+  "/create-3d(.*)",
+  "/model(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {

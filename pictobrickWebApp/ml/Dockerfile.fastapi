@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Heavy deps first — cached layer, only rebuilt when these change
+# Depth endpoint deps only — fast build, small image
 RUN pip install --no-cache-dir \
     "numpy<2" \
     pillow \
@@ -15,15 +15,17 @@ RUN pip install --no-cache-dir \
     "accelerate>=0.30" \
     "fastapi>=0.110" \
     "uvicorn[standard]>=0.29" \
-    "pydantic>=2,<3"
+    "pydantic>=2,<3" \
+    "python-multipart"
 
-# Pre-download the depth model into the image so first request is instant
+# Pre-download depth model so first request is instant
 RUN python -c "\
 from transformers import pipeline; \
-pipe = pipeline('depth-estimation', model='depth-anything/Depth-Anything-V2-Small-hf', device=-1); \
+p = pipeline('depth-estimation', model='depth-anything/Depth-Anything-V2-Small-hf', device=-1); \
 print('Model cached.')"
 
 COPY app.py .
 
 EXPOSE 8000
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--timeout-keep-alive", "300"]
