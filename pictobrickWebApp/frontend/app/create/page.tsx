@@ -1,14 +1,23 @@
 "use client";
 
-import { useState, useRef } from "react";
-import Script from 'next/script';
+import { useState, useRef, useEffect } from "react";
+import Script from "next/script";
 import { useRouter } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { Upload, X, Layers, Smartphone, ArrowRight, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-
-type DetailLevel = "Low" | "Medium" | "High";
+import {
+  buildPartsList,
+  gridDimsFor,
+  loadImageFromDataUrl,
+  makeSourceThumbDataUrl,
+  makeThumbDataUrl,
+  quantizeImageDithered,
+  renderMosaic,
+  type DetailLevel,
+} from "@/lib/mosaic";
+import { generateId, saveBuild } from "@/lib/builds";
 
 const DETAIL_LEVELS: DetailLevel[] = ["Low", "Medium", "High"];
 const DETAIL_TO_PERCENT: Record<DetailLevel, string> = {
@@ -22,10 +31,95 @@ export default function BrickLabStudio() {
   const [images, setImages] = useState<(string | null)[]>(Array(5).fill(null));
   const [activeIndex, setActiveIndex] = useState<number>(0);
   const [detailLevel, setDetailLevel] = useState<DetailLevel>("Medium");
+  const [buildName, setBuildName] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const fileInputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animFrameRef = useRef<number | null>(null);
 
   const hasAnyImage = images.some((img) => img !== null);
+  const activeImage = images[activeIndex] ?? null;
+
+  useEffect(() => {
+    if (!activeImage || isGenerating) return;
+    let cancelled = false;
+
+    if (animFrameRef.current !== null) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+
+    loadImageFromDataUrl(activeImage).then((img) => {
+      if (cancelled || !previewCanvasRef.current) return;
+      const { gridW, gridH } = gridDimsFor(detailLevel, img.naturalWidth, img.naturalHeight);
+      const indices = quantizeImageDithered(img, gridW, gridH);
+      startScanAnimation(previewCanvasRef.current, img, indices, gridW, gridH);
+    });
+
+    return () => {
+      cancelled = true;
+      if (animFrameRef.current !== null) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
+      }
+    };
+  }, [activeImage, detailLevel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function startScanAnimation(
+    canvas: HTMLCanvasElement,
+    img: HTMLImageElement,
+    indices: Uint8Array,
+    gridW: number,
+    gridH: number
+  ) {
+    const W = 1280, H = 720;
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d")!;
+
+    const brickPx = Math.max(4, Math.floor(Math.min(W / gridW, H / gridH)));
+    const mosaicOff = document.createElement("canvas");
+    renderMosaic(mosaicOff, indices, gridW, gridH, { brickPx });
+
+    const duration = 1300;
+    const startTime = performance.now();
+
+    function frame(now: number) {
+      const t = Math.min((now - startTime) / duration, 1);
+      // ease-in-out cubic
+      const eased = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      const revealX = Math.floor(eased * W);
+
+      ctx.drawImage(img, 0, 0, W, H);
+
+      if (revealX > 0) {
+        const srcRevealX = Math.floor((revealX / W) * mosaicOff.width);
+        ctx.drawImage(mosaicOff, 0, 0, srcRevealX, mosaicOff.height, 0, 0, revealX, H);
+      }
+
+      if (t < 1) {
+        const grd = ctx.createLinearGradient(revealX - 48, 0, revealX + 48, 0);
+        grd.addColorStop(0, "rgba(245,124,0,0)");
+        grd.addColorStop(0.4, "rgba(245,124,0,0.5)");
+        grd.addColorStop(0.5, "rgba(255,215,100,0.95)");
+        grd.addColorStop(0.6, "rgba(245,124,0,0.5)");
+        grd.addColorStop(1, "rgba(245,124,0,0)");
+        ctx.fillStyle = grd;
+        ctx.fillRect(revealX - 48, 0, 96, H);
+
+        ctx.strokeStyle = "rgba(255,240,180,0.7)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(revealX, 0);
+        ctx.lineTo(revealX, H);
+        ctx.stroke();
+      }
+
+      animFrameRef.current = t < 1 ? requestAnimationFrame(frame) : null;
+    }
+
+    animFrameRef.current = requestAnimationFrame(frame);
+  }
 
   const handleUpload = (index: number, file: File | null) => {
     if (!file) return;
@@ -44,48 +138,86 @@ export default function BrickLabStudio() {
     const updated = [...images];
     updated[index] = null;
     setImages(updated);
+    if (animFrameRef.current !== null) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    if (previewCanvasRef.current) {
+      const ctx = previewCanvasRef.current.getContext("2d");
+      ctx?.clearRect(0, 0, previewCanvasRef.current.width, previewCanvasRef.current.height);
+    }
     if (index === activeIndex && index > 0) setActiveIndex(index - 1);
   };
 
-  const triggerUpload = (index: number) => {
-    fileInputRefs.current[index]?.click();
-  };
+  const triggerUpload = (index: number) => fileInputRefs.current[index]?.click();
 
   const clearAll = () => {
     if (!hasAnyImage) return;
     setImages(Array(5).fill(null));
     setActiveIndex(0);
-    fileInputRefs.current.forEach((el) => {
-      if (el) el.value = "";
-    });
+    fileInputRefs.current.forEach((el) => { if (el) el.value = ""; });
+    if (animFrameRef.current !== null) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    if (previewCanvasRef.current) {
+      const ctx = previewCanvasRef.current.getContext("2d");
+      ctx?.clearRect(0, 0, previewCanvasRef.current.width, previewCanvasRef.current.height);
+    }
   };
 
   const generateLayout = async () => {
     if (!hasAnyImage || isGenerating) return;
     setIsGenerating(true);
-    // TODO: POST images + detailLevel to FastAPI once the backend endpoint exists.
-    // Simulating generation for now so the flow is clickable end-to-end.
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    router.push("/my-builds");
+    try {
+      const sources = images.filter((src): src is string => src !== null);
+      const createdAt = new Date().toISOString();
+      const savedIds: string[] = [];
+      for (let i = 0; i < sources.length; i++) {
+        const img = await loadImageFromDataUrl(sources[i]);
+        const { gridW, gridH } = gridDimsFor(detailLevel, img.naturalWidth, img.naturalHeight);
+        const indices = quantizeImageDithered(img, gridW, gridH);
+        const thumb = makeThumbDataUrl(indices, gridW, gridH);
+        const sourceThumb = makeSourceThumbDataUrl(img);
+        const parts = buildPartsList(indices);
+        const id = generateId();
+        const base = buildName.trim() || `Build ${new Date().toLocaleDateString()}`;
+        saveBuild({
+          id,
+          title: sources.length > 1 ? `${base} #${i + 1}` : base,
+          createdAt,
+          detail: detailLevel,
+          gridW,
+          gridH,
+          indices: Array.from(indices),
+          thumbDataUrl: thumb,
+          sourceThumbDataUrl: sourceThumb,
+          parts,
+        });
+        savedIds.push(id);
+      }
+      if (savedIds.length === 1) {
+        router.push(`/build/${savedIds[0]}`);
+      } else {
+        router.push("/my-builds");
+      }
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-6 flex flex-col items-center justify-center relative overflow-hidden font-sans">
-      
-      {/* Background Decor - Subtle Logo Colors */}
       <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none">
         <div className="absolute top-[-10%] right-[-5%] w-[500px] h-[500px] bg-[#f57c00]/5 rounded-full blur-[100px]" />
         <div className="absolute bottom-[-10%] left-[-5%] w-[600px] h-[600px] bg-[#004b87]/5 rounded-full blur-[120px]" />
       </div>
 
-      {/* Top Navigation / Logo Area */}
       <div className="absolute top-6 left-8 z-50 flex flex-col items-start">
         <img src="/logobackgroundremoved.png" alt="BrickLab Studio" className="h-30" />
       </div>
 
       <div className="max-w-6xl w-full z-10 grid grid-cols-1 lg:grid-cols-12 gap-8 mt-16">
-        
-        {/* Left Column: The "Workbench" (Main Preview) */}
         <div className="lg:col-span-8 flex flex-col gap-6">
           <motion.div
             initial={{ opacity: 0, y: 10 }}
@@ -94,7 +226,7 @@ export default function BrickLabStudio() {
           >
             <div>
               <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-3">
-                <Layers className="text-[#004b87]" /> Test Building
+                <Layers className="text-[#004b87]" /> Brick Lab Studio
               </h1>
               <p className="text-slate-500 text-sm mt-1">
                 {images.filter(Boolean).length} / 5 Assets Ready
@@ -111,73 +243,50 @@ export default function BrickLabStudio() {
           </motion.div>
 
           {/* Main Stage */}
-          <div className="relative aspect-video bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-xl shadow-slate-200/50 group">
-            <AnimatePresence mode="wait">
-              {images[activeIndex] ? (
-                <motion.div
-                  key={activeIndex}
-                  initial={{ opacity: 0, scale: 1.05 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.4 }}
-                  className="w-full h-full relative"
-                >
-                  <img
-                    src={images[activeIndex]!}
-                    alt="Active Preview"
-                    className="w-full h-full object-cover"
-                  />
-                  {/* "Scanning" Overlay Effect */}
-                  <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#f57c00]/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-700 pointer-events-none animate-scan" />
-                  <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur-md px-3 py-1 rounded-full text-xs font-mono text-[#004b87] border border-slate-200 shadow-sm">
-                    IMG_SOURCE_0{activeIndex + 1}.RAW
-                  </div>
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="empty"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="w-full h-full flex flex-col items-center justify-center text-slate-400 gap-4"
-                >
-                  {/* This is where the 3D scene will inject itself */}
-                    <div
-                        id="container3D"
-                        className="w-full max-w-2xl h-[400px] mx-auto rounded-xl border border-slate-800 bg-black/20"
-                    ></div>
-
-                    {/* The Script Loader */}
-                    <Script
-                        src="/viewer.js"
-                        type="module"
-                        strategy="afterInteractive"
-                    />
-                </motion.div>
-              )}
-            </AnimatePresence>
+          <div className="relative aspect-video bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-xl shadow-slate-200/50">
+            {activeImage ? (
+              <>
+                <canvas
+                  ref={previewCanvasRef}
+                  className="w-full h-full"
+                  style={{ display: "block" }}
+                />
+                <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur-md px-3 py-1 rounded-full text-xs font-mono text-[#004b87] border border-slate-200 shadow-sm">
+                  IMG_SOURCE_0{activeIndex + 1}.RAW
+                </div>
+              </>
+            ) : (
+              <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 gap-4">
+                <div
+                  id="container3D"
+                  className="w-full max-w-2xl h-[400px] mx-auto rounded-xl border border-slate-800 bg-black/20"
+                />
+                <Script src="/viewer.js" type="module" strategy="afterInteractive" />
+              </div>
+            )}
           </div>
 
-          {/* Filmstrip / Thumbnails */}
+          {/* Filmstrip */}
           <div className="grid grid-cols-5 gap-4">
             {images.map((img, i) => (
               <motion.div
                 key={i}
                 whileHover={{ y: -4 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => img ? setActiveIndex(i) : triggerUpload(i)}
-                className={`
-                  relative aspect-square rounded-xl cursor-pointer overflow-hidden border-2 transition-all duration-300 bg-white
-                  ${activeIndex === i ? "border-[#f57c00] shadow-[0_0_15px_rgba(245,124,0,0.2)]" : "border-slate-200 hover:border-slate-400"}
-                `}
+                onClick={() => (img ? setActiveIndex(i) : triggerUpload(i))}
+                className={`relative aspect-square rounded-xl cursor-pointer overflow-hidden border-2 transition-all duration-300 bg-white ${
+                  activeIndex === i
+                    ? "border-[#f57c00] shadow-[0_0_15px_rgba(245,124,0,0.2)]"
+                    : "border-slate-200 hover:border-slate-400"
+                }`}
               >
                 <input
                   type="file"
                   className="hidden"
                   accept="image/*"
-                  ref={(el) => { fileInputRefs.current[i] = el }}
+                  ref={(el) => { fileInputRefs.current[i] = el; }}
                   onChange={(e) => handleUpload(i, e.target.files?.[0] || null)}
                 />
-
                 {img ? (
                   <>
                     <img src={img} alt={`Upload ${i + 1}`} className="w-full h-full object-cover" />
@@ -202,12 +311,25 @@ export default function BrickLabStudio() {
           </div>
         </div>
 
-        {/* Right Column: Controls & Stats */}
+        {/* Right Column */}
         <div className="lg:col-span-4 flex flex-col gap-6">
           <Card className="bg-white border-slate-200 shadow-xl shadow-slate-200/50 p-6 flex-1 flex flex-col">
             <h3 className="text-lg font-bold text-slate-800 mb-6 border-b border-slate-100 pb-4">Configuration</h3>
-            
+
             <div className="space-y-6 flex-1">
+              <div className="space-y-2">
+                <label className="text-sm text-slate-600 font-medium">Build Name</label>
+                <input
+                  type="text"
+                  value={buildName}
+                  onChange={(e) => setBuildName(e.target.value)}
+                  disabled={isGenerating}
+                  placeholder={`Build ${new Date().toLocaleDateString()}`}
+                  maxLength={60}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#004b87]/30 focus:border-[#004b87] disabled:opacity-50"
+                />
+              </div>
+
               <div className="space-y-2">
                 <div className="flex justify-between text-sm text-slate-600 font-medium">
                   <span>Rendering Detail</span>
