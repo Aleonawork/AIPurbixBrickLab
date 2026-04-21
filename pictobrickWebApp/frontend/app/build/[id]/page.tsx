@@ -1,12 +1,15 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft, ArrowRight, ArrowLeft as Prev,
-  Check, Download, Grid2x2, ImageIcon, Plus, Trash2, BookOpen,
+  Check, Download, Grid2x2, ImageIcon, Plus, Trash2, BookOpen, Box,
 } from "lucide-react";
+
+const MosaicViewer3D = dynamic(() => import("@/components/MosaicViewer3D"), { ssr: false });
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -23,6 +26,7 @@ export default function BuildResultPage() {
 
   const [build, setBuild] = useState<StoredBuild | null | undefined>(undefined);
   const [showOriginal, setShowOriginal] = useState(false);
+  const [show3D, setShow3D] = useState(false);
   const [hoveredHex, setHoveredHex] = useState<string | null>(null);
   const [buildMode, setBuildMode] = useState(false);
   const [buildStep, setBuildStep] = useState(0);
@@ -34,7 +38,7 @@ export default function BuildResultPage() {
   }, [id]);
 
   useEffect(() => {
-    if (!build || !canvasRef.current || showOriginal) return;
+    if (!build || !canvasRef.current || showOriginal || show3D) return;
     const longSide = Math.max(build.gridW, build.gridH);
     const brickPx = Math.max(8, Math.min(22, Math.floor(900 / longSide)));
     const { indices, gridW, gridH, parts } = build;
@@ -46,7 +50,7 @@ export default function BuildResultPage() {
     } else {
       renderMosaic(canvasRef.current, indices, gridW, gridH, { brickPx });
     }
-  }, [build, showOriginal, hoveredHex, buildMode, buildStep]);
+  }, [build, showOriginal, show3D, hoveredHex, buildMode, buildStep]);
 
   const stepHexes = build?.parts.map(p => p.hex) ?? [];
   const totalSteps = stepHexes.length;
@@ -54,6 +58,7 @@ export default function BuildResultPage() {
 
   const enterBuildMode = () => {
     setShowOriginal(false);
+    setShow3D(false);
     setHoveredHex(null);
     setBuildStep(0);
     setBuildMode(true);
@@ -122,6 +127,15 @@ export default function BuildResultPage() {
               {showOriginal ? <><Grid2x2 className="w-4 h-4 mr-2" /> Show Mosaic</> : <><ImageIcon className="w-4 h-4 mr-2" /> Show Original</>}
             </Button>
           )}
+          {!buildMode && (
+            <Button
+              variant="outline"
+              onClick={() => { setShow3D(v => !v); setShowOriginal(false); setHoveredHex(null); setBuildMode(false); }}
+              className={`border-slate-700 text-slate-200 ${show3D ? "bg-slate-700" : ""}`}
+            >
+              <Box className="w-4 h-4 mr-2" /> {show3D ? "2D View" : "3D View"}
+            </Button>
+          )}
           {!buildMode ? (
             <Button onClick={enterBuildMode} className="bg-indigo-600 hover:bg-indigo-500 text-white">
               <BookOpen className="w-4 h-4 mr-2" /> Build Guide
@@ -188,18 +202,24 @@ export default function BuildResultPage() {
             </Card>
           )}
 
-          <Card className="bg-slate-900/40 border-slate-800 p-4 overflow-auto">
-            <div className="flex items-center justify-center">
-              <img
-                src={build.sourceThumbDataUrl ?? ""}
-                alt="Original photo"
-                className={`w-full h-auto rounded-lg shadow-2xl shadow-black/40 ${showOriginal && build.sourceThumbDataUrl && !buildMode ? "block" : "hidden"}`}
-              />
-              <canvas
-                ref={canvasRef}
-                className={`w-full h-auto rounded-lg shadow-2xl shadow-black/40 ${showOriginal && build.sourceThumbDataUrl && !buildMode ? "hidden" : "block"}`}
-              />
-            </div>
+          <Card className="bg-slate-900/40 border-slate-800 p-4 overflow-hidden">
+            {show3D ? (
+              <div className="h-[520px] rounded-lg overflow-hidden">
+                <MosaicViewer3D indices={build.indices} gridW={build.gridW} gridH={build.gridH} />
+              </div>
+            ) : (
+              <div className="flex items-center justify-center">
+                <img
+                  src={build.sourceThumbDataUrl ?? ""}
+                  alt="Original photo"
+                  className={`w-full h-auto rounded-lg shadow-2xl shadow-black/40 ${showOriginal && build.sourceThumbDataUrl && !buildMode ? "block" : "hidden"}`}
+                />
+                <canvas
+                  ref={canvasRef}
+                  className={`w-full h-auto rounded-lg shadow-2xl shadow-black/40 ${showOriginal && build.sourceThumbDataUrl && !buildMode ? "hidden" : "block"}`}
+                />
+              </div>
+            )}
           </Card>
         </div>
 
