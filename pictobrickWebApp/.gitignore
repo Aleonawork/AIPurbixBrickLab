@@ -62,3 +62,7 @@ frontend/.next/
 frontend/out/
 frontend/node_modules/
 .DS_Store
+
+.env.local
+.claude
+/.claude

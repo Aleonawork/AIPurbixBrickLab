@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from ..preprocess.engine import PreprocessReq, PreprocessResult, run_preprocess
 from ..preprocess.io import JobWorkSpace
@@ -46,7 +46,8 @@ class PipelineReq:
     clean: bool = False
     preprocess_settings: PreprocessSettings = None  # defaults applied below
     sfm_settings: SfmSettings = None               # defaults applied below
-
+    # Optional callback invoked after each stage: (stage_name, progress_pct)
+    progress_cb: Callable[[str, int], None] | None = None
 
     def __post_init__(self) -> None:
         if self.preprocess_settings is None:
@@ -112,6 +113,13 @@ def preprocess_to_sfm_req(
 
 
 def run_pipeline(req: PipelineReq) -> PipelineResult:
+    def _report(stage: str, pct: int) -> None:
+        if req.progress_cb is not None:
+            try:
+                req.progress_cb(stage, pct)
+            except Exception:
+                pass  # never let a callback crash the pipeline
+
     # --- Stage 1: Preprocess ---
     preprocess_req = PreprocessReq(
         base_dir=req.base_dir,
@@ -121,6 +129,7 @@ def run_pipeline(req: PipelineReq) -> PipelineResult:
         settings=req.preprocess_settings,
     )
     preprocess_result = run_preprocess(preprocess_req)
+    _report("preprocess", 12)
 
     if preprocess_result.kept_frames == 0:
         # No point running SfM with zero frames
@@ -153,15 +162,28 @@ def run_pipeline(req: PipelineReq) -> PipelineResult:
 
     # --- Stage 3: SfM ---
     sfm_result = run_sfm(sfm_req, req.sfm_settings)
+    _report("sfm", 30)
 
-    sfm_qc_result = run_sfm_qc(
-        SfmQcReq(
+    sfm_qc_result: SfmQcResult | None = None
+    if sfm_result.ok and sfm_result.best_model_dir is not None:
+        sfm_qc_result = run_sfm_qc(
+            SfmQcReq(
+                job_id=req.job_id,
+                sparse_model_dir=sfm_result.best_model_dir,
+                num_input_images=preprocess_result.kept_frames,
+            ),
+            SfmQcSettings(colmap_bin=req.sfm_settings.colmap_bin),
+        )
+    else:
+        sfm_qc_result = SfmQcResult(
             job_id=req.job_id,
-            sparse_model_dir=sfm_result.best_model_dir,
-            num_input_images=preprocess_result.kept_frames,
-        ),
-        SfmQcSettings(colmap_bin=req.sfm_settings.colmap_bin),
-    )
+            ok=False,
+            route="orange",
+            score=0.0,
+            error="SfM produced no sparse models — routing Orange",
+        )
+
+    _report("sfm_qc", 42)
 
     #Priors
     priors_result:PriorsResult | None=None
@@ -175,7 +197,9 @@ def run_pipeline(req: PipelineReq) -> PipelineResult:
             ),
             PriorsSettings(device="cpu"),
     )
-    """sfm_qc_result.route == "orange" and""" # dont check for orange pipeline 
+    if priors_result is not None and priors_result.ok:
+        _report("priors", 58)
+    """sfm_qc_result.route == "orange" and""" # dont check for orange pipeline
     # until all blue is added TODO
     shape_result: ShapeCompletionResult | None = None
     if  priors_result is not None and priors_result.ok:
@@ -193,6 +217,8 @@ def run_pipeline(req: PipelineReq) -> PipelineResult:
             ShapeCompletionSettings(),
         )
 
+    if shape_result is not None and shape_result.ok:
+        _report("shape_completion", 70)
     #Voxelization
     voxel_result: VoxelizationResult | None = None
     if shape_result is not None and shape_result.ok:
@@ -205,6 +231,8 @@ def run_pipeline(req: PipelineReq) -> PipelineResult:
             VoxelizationSettings(),
         )
 
+    if voxel_result is not None and voxel_result.ok:
+        _report("voxelization", 80)
     # Brickification
     brickification_result: BrickificationResult | None = None
     if voxel_result is not None and voxel_result.ok:
@@ -217,6 +245,7 @@ def run_pipeline(req: PipelineReq) -> PipelineResult:
             BrickificationSettings(),
         )
 
+        _report("brickification", 90)
         # Instruction Generation and final outputs
         instructions_result: InstructionsResult | None = None
     if brickification_result is not None and brickification_result.ok:
@@ -230,6 +259,7 @@ def run_pipeline(req: PipelineReq) -> PipelineResult:
         InstructionsSettings(),
     )
 
+    _report("instructions", 100)
     return PipelineResult(
         job_id=req.job_id,
         preprocess=preprocess_result,

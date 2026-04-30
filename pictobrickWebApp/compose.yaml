@@ -1,12 +1,3 @@
-# Comments are provided throughout this file to help you get started.
-# If you need more help, visit the Docker Compose reference guide at
-# https://docs.docker.com/go/compose-spec-reference/
-
-# Here the instructions define your application as a service called "server".
-# This service is built from the Dockerfile in the current directory.
-# You can add other services your application may depend on here, such as a
-# database or a cache. For examples, see the Awesome Compose repository:
-# https://github.com/docker/awesome-compose
 services:
 
   frontend:
@@ -14,20 +5,18 @@ services:
       context: ./frontend
       dockerfile: Dockerfile.frontend
       args:
-        # NEXT_PUBLIC_* is inlined into the client JS bundle at build time.
-        # Safe to commit — Clerk publishable keys are public by design.
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_bWVhc3VyZWQtY29sbGllLTc3LmNsZXJrLmFjY291bnRzLmRldiQ
     ports:
       - "3000:3000"
     env_file:
-      - .env.local    # secrets (CLERK_SECRET_KEY) — gitignored, share via password manager
+      - .env.local    # CLERK_SECRET_KEY — gitignored, share via password manager
     environment:
       NODE_ENV: production
       PORT: 3000
       FASTAPI_INTERNAL_URL: http://fastapi:8000
       NEXT_PUBLIC_API_URL: http://localhost:3000
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/pictobrick
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://redis:6379/0
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_bWVhc3VyZWQtY29sbGllLTc3LmNsZXJrLmFjY291bnRzLmRldiQ
     depends_on:
       - postgres
@@ -37,7 +26,7 @@ services:
   postgres:
     image: postgres:15-alpine
     ports:
-      - "5432:5432"       # exposed for local dev/debugging
+      - "5432:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -48,7 +37,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"       # exposed for local dev/debugging
+      - "6379:6379"
 
   fastapi:
     build:
@@ -56,46 +45,49 @@ services:
       dockerfile: Dockerfile.fastapi
     ports:
       - "8000:8000"
+    volumes:
+      - local_storage:/app/storage   # shared with worker; unused when S3_BUCKET is set
+      - ~/.aws:/root/.aws:ro          # optional AWS credentials for S3 access, read-only
     environment:
-      REDIS_URL: redis://redis:6379
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/pictobrick
+      REDIS_URL: redis://redis:6379/0
+      LOCAL_STORAGE_DIR: /app/storage
+      S3_BUCKET: ${S3_BUCKET:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_PROFILE: pictobrickwebapp
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL:-}
+      # Clerk JWT verification (Phase 2)
+      CLERK_JWKS_URL: ${CLERK_JWKS_URL:-https://measured-collie-77.clerk.accounts.dev/.well-known/jwks.json}
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_bWVhc3VyZWQtY29sbGllLTc3LmNsZXJrLmFjY291bnRzLmRldiQ
+    depends_on:
+      - postgres
+      - redis
+
+  worker:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile.fastapi   # reuses the same image for Phase 1
+    command: >
+      celery -A tasks worker
+      --loglevel=info
+      --queues=default
+      --concurrency=1
+    volumes:
+      - local_storage:/app/storage
+      - ~/.aws:/root/.aws:ro          # optional AWS credentials for S3 access, read-only
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/pictobrick
+      REDIS_URL: redis://redis:6379/0
+      LOCAL_STORAGE_DIR: /app/storage
+      # S3 — leave blank to use the local_storage volume fallback
+      S3_BUCKET: ${S3_BUCKET:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_PROFILE: pictobrickwebapp
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL:-}
     depends_on:
       - postgres
       - redis
 
 volumes:
   postgres_data:
-
-# The commented out section below is an example of how to define a PostgreSQL
-# database that your application can use. `depends_on` tells Docker Compose to
-# start the database before your application. The `db-data` volume persists the
-# database data between container restarts. The `db-password` secret is used
-# to set the database password. You must create `db/password.txt` and add
-# a password of your choosing to it before running `docker-compose up`.
-#     depends_on:
-#       db:
-#         condition: service_healthy
-#   db:
-#     image: postgres
-#     restart: always
-#     user: postgres
-#     secrets:
-#       - db-password
-#     volumes:
-#       - db-data:/var/lib/postgresql/data
-#     environment:
-#       - POSTGRES_DB=example
-#       - POSTGRES_PASSWORD_FILE=/run/secrets/db-password
-#     expose:
-#       - 5432
-#     healthcheck:
-#       test: [ "CMD", "pg_isready" ]
-#       interval: 10s
-#       timeout: 5s
-#       retries: 5
-# volumes:
-#   db-data:
-# secrets:
-#   db-password:
-#     file: db/password.txt
-
+  local_storage:    # shared between fastapi and worker when S3 is not configured

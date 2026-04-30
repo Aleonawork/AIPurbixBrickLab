@@ -83,3 +83,60 @@ export function sizeLabel(gridW: number, gridH: number): "Small" | "Medium" | "L
   if (long <= 80) return "Medium";
   return "Large";
 }
+
+// ---------------------------------------------------------------------------
+// Pending jobs — tracks async jobs submitted to /api/jobs that haven't yet
+// been saved to the builds list.  The build page reads this on completion
+// to reconstruct the StoredBuild (title, detail, sourceThumb, etc.).
+// ---------------------------------------------------------------------------
+
+export type PendingJobMeta = {
+  jobId: string;
+  title: string;
+  detail: DetailLevel;
+  sourceThumbDataUrl?: string;
+  submittedAt: string;
+};
+
+const PENDING_KEY = "pictobrick.pending_jobs.v1";
+
+function safeReadPending(): PendingJobMeta[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(PENDING_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as PendingJobMeta[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function savePendingJob(meta: PendingJobMeta): void {
+  if (typeof window === "undefined") return;
+  const all = safeReadPending();
+  const next = [meta, ...all.filter((j) => j.jobId !== meta.jobId)];
+  try {
+    window.localStorage.setItem(PENDING_KEY, JSON.stringify(next));
+  } catch {
+    // quota — drop oldest pending entries
+  }
+}
+
+export function getPendingJobMeta(jobId: string): PendingJobMeta | undefined {
+  return safeReadPending().find((j) => j.jobId === jobId);
+}
+
+export function removePendingJob(jobId: string): void {
+  if (typeof window === "undefined") return;
+  const next = safeReadPending().filter((j) => j.jobId !== jobId);
+  try {
+    window.localStorage.setItem(PENDING_KEY, JSON.stringify(next));
+  } catch {
+    // ignore
+  }
+}
+
+export function listPendingJobs(): PendingJobMeta[] {
+  return safeReadPending();
+}

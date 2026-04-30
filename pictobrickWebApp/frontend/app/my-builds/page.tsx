@@ -8,19 +8,88 @@ import { useUser } from "@clerk/nextjs";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Pencil, Plus, Trash2 } from "lucide-react";
-import { deleteBuild, listBuilds, renameBuild, sizeLabel, type StoredBuild } from "@/lib/builds";
+import {
+  deleteBuild as deleteLocalBuild,
+  listBuilds as listLocalBuilds,
+  renameBuild as renameLocalBuild,
+  sizeLabel,
+  type StoredBuild,
+} from "@/lib/builds";
+import {
+  deleteBuildRemote,
+  listBuilds as listRemoteBuilds,
+  renameBuildRemote,
+  type BuildSummary,
+} from "@/lib/api";
+
+// ---------------------------------------------------------------------------
+// Merge remote (API) and local (localStorage) build lists.
+// Remote entries win on ID collision; local-only entries are appended.
+// Sorted newest-first.
+// ---------------------------------------------------------------------------
+function mergeBuilds(remote: BuildSummary[], local: StoredBuild[]): StoredBuild[] {
+  const remoteIds = new Set(remote.map((b) => b.id));
+
+  // Convert remote summary → StoredBuild shape (indices omitted — not needed for list)
+  const fromRemote: StoredBuild[] = remote.map((b) => ({
+    id: b.id,
+    title: b.title,
+    createdAt: b.created_at,
+    detail: (b.detail ?? "Medium") as StoredBuild["detail"],
+    gridW: b.grid_w ?? 0,
+    gridH: b.grid_h ?? 0,
+    indices: [],                                // not loaded for list view
+    thumbDataUrl: b.thumb_data_url ?? "",
+    parts: [],                                  // not loaded for list view
+  }));
+
+  // Local-only builds (not yet synced / old pre-Phase-2 builds)
+  const localOnly = local.filter((b) => !remoteIds.has(b.id));
+
+  const merged = [...fromRemote, ...localOnly];
+  return merged.sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+}
 
 export default function MyBuildsPage() {
   const router = useRouter();
   const { user, isLoaded } = useUser();
+
   const [builds, setBuilds] = useState<StoredBuild[] | null>(null);
+  const [apiError, setApiError] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
 
+  // ---------------------------------------------------------------------------
+  // Load builds: API primary, localStorage fallback / merge
+  // ---------------------------------------------------------------------------
   useEffect(() => {
-    setBuilds(listBuilds());
+    let cancelled = false;
+
+    async function load() {
+      const local = listLocalBuilds();
+
+      try {
+        const remote = await listRemoteBuilds();
+        if (cancelled) return;
+        setBuilds(mergeBuilds(remote, local));
+      } catch {
+        // API unreachable or not signed in — fall back to localStorage only
+        if (!cancelled) {
+          setApiError(true);
+          setBuilds(local);
+        }
+      }
+    }
+
+    load();
+    return () => { cancelled = true; };
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // Rename
+  // ---------------------------------------------------------------------------
   const startEdit = (e: React.MouseEvent, build: StoredBuild) => {
     e.preventDefault();
     e.stopPropagation();
@@ -28,20 +97,47 @@ export default function MyBuildsPage() {
     setEditingValue(build.title);
   };
 
-  const commitEdit = (id: string) => {
-    if (editingValue.trim()) renameBuild(id, editingValue);
+  const commitEdit = async (id: string) => {
+    const newTitle = editingValue.trim();
     setEditingId(null);
-    setBuilds(listBuilds());
+    if (!newTitle) return;
+
+    // Optimistic update
+    setBuilds((prev) =>
+      (prev ?? []).map((b) => (b.id === id ? { ...b, title: newTitle } : b))
+    );
+
+    // Persist: try API first (may 404 if local-only build), then localStorage
+    try {
+      await renameBuildRemote(id, newTitle);
+    } catch {
+      // Local-only build — that's fine
+    }
+    renameLocalBuild(id, newTitle);
   };
 
-  const handleDelete = (e: React.MouseEvent, build: StoredBuild) => {
+  // ---------------------------------------------------------------------------
+  // Delete
+  // ---------------------------------------------------------------------------
+  const handleDelete = async (e: React.MouseEvent, build: StoredBuild) => {
     e.preventDefault();
     e.stopPropagation();
     if (!window.confirm(`Delete "${build.title}"? This cannot be undone.`)) return;
-    deleteBuild(build.id);
-    setBuilds(listBuilds());
+
+    // Optimistic removal
+    setBuilds((prev) => (prev ?? []).filter((b) => b.id !== build.id));
+
+    try {
+      await deleteBuildRemote(build.id);
+    } catch {
+      // Local-only build
+    }
+    deleteLocalBuild(build.id);
   };
 
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
   return (
     <div className="max-w-7xl mx-auto px-6 py-12">
       <div className="mb-10 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
@@ -52,6 +148,11 @@ export default function MyBuildsPage() {
               ? `Welcome back, ${user.firstName}. Here are your previous brick creations.`
               : "Your previous brick creations."}
           </p>
+          {apiError && (
+            <p className="text-xs text-amber-500/80">
+              Showing locally cached builds — could not reach the server.
+            </p>
+          )}
         </div>
         <Link href="/create">
           <Button className="bg-indigo-600 hover:bg-indigo-500 text-white">
@@ -90,11 +191,17 @@ export default function MyBuildsPage() {
                 className="group relative bg-slate-900/40 border-slate-800 overflow-hidden hover:border-indigo-500/50 transition-all duration-300 cursor-pointer"
               >
                 <div className="aspect-[4/5] w-full bg-black/40 flex items-center justify-center relative overflow-hidden">
-                  <img
-                    src={build.thumbDataUrl}
-                    alt={build.title}
-                    className="w-full h-full object-contain p-3 group-hover:scale-[1.02] transition-transform duration-300"
-                  />
+                  {build.thumbDataUrl ? (
+                    <img
+                      src={build.thumbDataUrl}
+                      alt={build.title}
+                      className="w-full h-full object-contain p-3 group-hover:scale-[1.02] transition-transform duration-300"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-slate-700 text-sm">
+                      No preview
+                    </div>
+                  )}
                   <button
                     onClick={(e) => handleDelete(e, build)}
                     className="absolute top-2 right-2 p-2 bg-slate-900/80 hover:bg-red-500 text-slate-200 hover:text-white rounded-full transition shadow-lg backdrop-blur-sm"
@@ -132,18 +239,19 @@ export default function MyBuildsPage() {
                         </button>
                       </div>
                     )}
-                    <span className="text-[10px] border border-slate-700 text-slate-400 px-2 py-0.5 rounded-full uppercase font-semibold shrink-0">
-                      {sizeLabel(build.gridW, build.gridH)}
-                    </span>
+                    {build.gridW > 0 && (
+                      <span className="text-[10px] border border-slate-700 text-slate-400 px-2 py-0.5 rounded-full uppercase font-semibold shrink-0">
+                        {sizeLabel(build.gridW, build.gridH)}
+                      </span>
+                    )}
                   </div>
                   <p className="text-sm text-slate-500">
-                    Created{" "}
                     {new Date(build.createdAt).toLocaleDateString(undefined, {
                       year: "numeric",
                       month: "short",
                       day: "numeric",
-                    })}{" "}
-                    · {build.gridW}×{build.gridH}
+                    })}
+                    {build.gridW > 0 && ` · ${build.gridW}×${build.gridH}`}
                   </p>
                 </div>
               </Card>

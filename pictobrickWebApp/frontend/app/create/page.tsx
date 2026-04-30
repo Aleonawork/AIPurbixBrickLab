@@ -8,16 +8,15 @@ import { Upload, X, Layers, Smartphone, ArrowRight, Loader2 } from "lucide-react
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
-  buildPartsList,
   gridDimsFor,
   loadImageFromDataUrl,
   makeSourceThumbDataUrl,
-  makeThumbDataUrl,
   quantizeImageDithered,
   renderMosaic,
   type DetailLevel,
 } from "@/lib/mosaic";
-import { generateId, saveBuild } from "@/lib/builds";
+import { savePendingJob } from "@/lib/builds";
+import { dataUrlToFile, submitJob } from "@/lib/api";
 
 const DETAIL_LEVELS: DetailLevel[] = ["Low", "Medium", "High"];
 const DETAIL_TO_PERCENT: Record<DetailLevel, string> = {
@@ -171,34 +170,40 @@ export default function BrickLabStudio() {
     setIsGenerating(true);
     try {
       const sources = images.filter((src): src is string => src !== null);
-      const createdAt = new Date().toISOString();
-      const savedIds: string[] = [];
+      const base = buildName.trim() || `Build ${new Date().toLocaleDateString()}`;
+      const submittedAt = new Date().toISOString();
+      const jobIds: string[] = [];
+
       for (let i = 0; i < sources.length; i++) {
+        const title = sources.length > 1 ? `${base} #${i + 1}` : base;
+        const file = dataUrlToFile(sources[i], `image_${i}.jpg`);
+
+        // Generate source thumbnail client-side so the build page can show
+        // the original photo alongside the mosaic after polling completes.
         const img = await loadImageFromDataUrl(sources[i]);
-        const { gridW, gridH } = gridDimsFor(detailLevel, img.naturalWidth, img.naturalHeight);
-        const indices = quantizeImageDithered(img, gridW, gridH);
-        const thumb = makeThumbDataUrl(indices, gridW, gridH);
-        const sourceThumb = makeSourceThumbDataUrl(img);
-        const parts = buildPartsList(indices);
-        const id = generateId();
-        const base = buildName.trim() || `Build ${new Date().toLocaleDateString()}`;
-        saveBuild({
-          id,
-          title: sources.length > 1 ? `${base} #${i + 1}` : base,
-          createdAt,
+        const sourceThumbDataUrl = makeSourceThumbDataUrl(img);
+
+        const { job_id } = await submitJob(file, detailLevel, title);
+
+        // Store metadata so the build page can reconstruct the StoredBuild
+        // without a round-trip to the server for fields the server doesn't keep.
+        savePendingJob({
+          jobId: job_id,
+          title,
           detail: detailLevel,
-          gridW,
-          gridH,
-          indices: Array.from(indices),
-          thumbDataUrl: thumb,
-          sourceThumbDataUrl: sourceThumb,
-          parts,
+          sourceThumbDataUrl,
+          submittedAt,
         });
-        savedIds.push(id);
+
+        jobIds.push(job_id);
       }
-      if (savedIds.length === 1) {
-        router.push(`/build/${savedIds[0]}`);
+
+      if (jobIds.length === 1) {
+        // Single image: go straight to the polling build page.
+        router.push(`/build/${jobIds[0]}?polling=true`);
       } else {
+        // Multiple images: all jobs are queued; my-builds will show them
+        // as they complete (each build page saves to localStorage on visit).
         router.push("/my-builds");
       }
     } finally {

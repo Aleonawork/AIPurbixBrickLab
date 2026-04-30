@@ -14,7 +14,8 @@ class SfmQcReq:
     num_input_images: int   # total frames passed to SfM
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "sparse_model_dir", Path(self.sparse_model_dir))
+        if self.sparse_model_dir is not None:
+            object.__setattr__(self, "sparse_model_dir", Path(self.sparse_model_dir))
 
 
 @dataclass(frozen=True)
